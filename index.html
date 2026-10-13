@@ -90,6 +90,7 @@ a{color:var(--pri);font-weight:600}
       <div class="tools">
         <button class="alt" id="csv">Export CSV</button>
         <button class="alt" id="clear">Clear all</button>
+        <button class="alt" id="test">Test Sheet connection</button>
       </div>
       <div class="wrap"><div id="list"></div></div>
     </section>
@@ -242,6 +243,16 @@ function photoData(img){
   c.getContext("2d").drawImage(img,0,0,c.width,c.height);
   return c.toDataURL("image/jpeg",.7).split(",")[1];
 }
+function parseReply(t){
+  try{const j=JSON.parse(t);if(j&&j.error==="unauthorized")j.error="The secret in index.html does not match the SECRET in Code.gs.";return j}
+  catch(e){return{ok:false,error:/<html|sign in|accounts\.google/i.test(t)?"Google returned a sign-in page. In Apps Script, set Who has access to Anyone and deploy a new version.":"Unexpected reply from the Sheet."}}
+}
+async function testSheet(){
+  if(!SHEET_URL)return alert("SHEET_URL is empty in index.html.");
+  try{const r=await fetch(SHEET_URL);const j=parseReply(await r.text());
+    alert(j.ok?"Connected. The Sheet endpoint is running.":j.error)}
+  catch(e){alert("Could not reach the Sheet ("+e.message+"). Use the URL ending in /exec, set access to Anyone, and deploy a new version.")}
+}
 async function sync(id){
   if(!SHEET_URL)return;
   const a=load(),r=a.find(x=>rid(x)===id);
@@ -249,10 +260,10 @@ async function sync(id){
   sending[id]=1;render();
   try{
     const res=await fetch(SHEET_URL,{method:"POST",body:JSON.stringify({secret:SECRET,id:id,t:r.t,odo:r.odo,lat:r.lat,lng:r.lng,acc:r.acc,src:r.src,photo:pend[id]||""})});
-    const j=await res.json();
+    const j=parseReply(await res.text());
     if(j.ok){r.sync=1;r.photoUrl=j.photoUrl||"";store(a);delete pend[id]}
-    else alert("Sheet said: "+(j.error||"unknown error"));
-  }catch(e){}
+    else alert(j.error||"Unknown error from the Sheet");
+  }catch(e){alert("Could not reach the Sheet ("+e.message+"). Check that SHEET_URL is the /exec link and the deployment access is set to Anyone.")}
   delete sending[id];render();
 }
 $("save").onclick=()=>{
@@ -279,6 +290,7 @@ function render(){
 }
 $("list").onclick=e=>{const i=e.target.dataset&&e.target.dataset.i;if(i!=null&&confirm("Delete this reading?")){const a=load();a.splice(+i,1);store(a);render()}};
 $("list").addEventListener("click",e=>{const s=e.target.dataset&&e.target.dataset.s;if(s)sync(s)});
+$("test").onclick=testSheet;
 $("clear").onclick=()=>{if(load().length&&confirm("Delete all saved readings?")){store([]);render()}};
 $("csv").onclick=()=>{
   const a=load();if(!a.length)return;
