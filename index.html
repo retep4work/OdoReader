@@ -100,6 +100,11 @@ a{color:var(--pri);font-weight:600}
 (function(){
 const $=id=>document.getElementById(id);
 const KEY="odo-log-v1";
+// Paste your Apps Script web app URL (ends in /exec) and the same secret used in Code.gs
+const SHEET_URL="";
+const SECRET="finsiodometerproject";
+const pend={},sending={};
+const rid=r=>"r-"+Date.parse(r.t);
 let cur=null, worker=null, busy=false;
 
 function set(k,cls,txt){$("d-"+k).className="dot "+cls;$("t-"+k).textContent=txt}
@@ -231,20 +236,49 @@ crop.addEventListener("pointerup",e=>{if(!st)return;const q=pt(e),k=cur.img.widt
   if(box.w<10||box.h<6){sel.style.display="none";return}
   runOcr(cur.img,box)});
 
+function photoData(img){
+  const k=Math.min(1,1280/Math.max(img.width,img.height)),c=document.createElement("canvas");
+  c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);
+  c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+  return c.toDataURL("image/jpeg",.7).split(",")[1];
+}
+async function sync(id){
+  if(!SHEET_URL)return;
+  const a=load(),r=a.find(x=>rid(x)===id);
+  if(!r||r.sync||sending[id])return;
+  sending[id]=1;render();
+  try{
+    const res=await fetch(SHEET_URL,{method:"POST",body:JSON.stringify({secret:SECRET,id:id,t:r.t,odo:r.odo,lat:r.lat,lng:r.lng,acc:r.acc,src:r.src,photo:pend[id]||""})});
+    const j=await res.json();
+    if(j.ok){r.sync=1;r.photoUrl=j.photoUrl||"";store(a);delete pend[id]}
+    else alert("Sheet said: "+(j.error||"unknown error"));
+  }catch(e){}
+  delete sending[id];render();
+}
 $("save").onclick=()=>{
-  const a=load();
-  a.unshift({t:cur.time,odo:$("odo").value.trim(),lat:cur.lat,lng:cur.lng,acc:cur.acc,src:cur.src,th:cur.thumb});
+  const a=load(),rec={t:cur.time,odo:$("odo").value.trim(),lat:cur.lat,lng:cur.lng,acc:cur.acc,src:cur.src,th:cur.thumb};
+  if(SHEET_URL)pend[rid(rec)]=photoData(cur.img);
+  a.unshift(rec);
   if(store(a)){render();cur=null;$("preview").style.display="none";$("odo").value="";
-    set("ocr","","Reading: waiting for a photo");set("gps","","Location: waiting for a photo");set("chk","","Cross-check: waiting for a photo");refresh()}
+    set("ocr","","Reading: waiting for a photo");set("gps","","Location: waiting for a photo");set("chk","","Cross-check: waiting for a photo");refresh();
+    sync(rid(rec))}
 };
+function sheetCell(r){
+  if(!SHEET_URL)return "";
+  const id=rid(r);
+  if(r.sync)return r.photoUrl?"<a target='_blank' rel='noopener' href='"+r.photoUrl+"'>Saved</a>":"Saved";
+  if(sending[id])return "Sending...";
+  return "<button class='x' style='color:var(--warn)' data-s='"+id+"'>Retry</button>";
+}
 function render(){
   const a=load();
   if(!a.length){$("list").innerHTML='<p class="empty">No readings yet. Take your first photo.</p>';return}
-  $("list").innerHTML="<table><thead><tr><th></th><th>Reading</th><th>When</th><th>Accuracy</th><th>Map</th><th></th></tr></thead><tbody>"+
+  $("list").innerHTML="<table><thead><tr><th></th><th>Reading</th><th>When</th><th>Accuracy</th><th>Map</th><th>Sheet</th><th></th></tr></thead><tbody>"+
   a.map((r,i)=>"<tr><td><img alt='' src='"+r.th+"'></td><td class='num'>"+r.odo+"</td><td>"+new Date(r.t).toLocaleString()+
-  "</td><td>"+(r.acc!==""&&r.acc!=null?r.acc+" m":r.src)+"</td><td><a target='_blank' rel='noopener' href='"+mapLink(r.lat,r.lng)+"'>View location</a></td><td><button class='x' data-i='"+i+"' aria-label='Delete reading'>Delete</button></td></tr>").join("")+"</tbody></table>";
+  "</td><td>"+(r.acc!==""&&r.acc!=null?r.acc+" m":r.src)+"</td><td><a target='_blank' rel='noopener' href='"+mapLink(r.lat,r.lng)+"'>View location</a></td><td>"+sheetCell(r)+"</td><td><button class='x' data-i='"+i+"' aria-label='Delete reading'>Delete</button></td></tr>").join("")+"</tbody></table>";
 }
 $("list").onclick=e=>{const i=e.target.dataset&&e.target.dataset.i;if(i!=null&&confirm("Delete this reading?")){const a=load();a.splice(+i,1);store(a);render()}};
+$("list").addEventListener("click",e=>{const s=e.target.dataset&&e.target.dataset.s;if(s)sync(s)});
 $("clear").onclick=()=>{if(load().length&&confirm("Delete all saved readings?")){store([]);render()}};
 $("csv").onclick=()=>{
   const a=load();if(!a.length)return;
