@@ -52,6 +52,12 @@ a{color:var(--pri);font-weight:600}
 .empty{color:var(--mute);padding:20px 0;text-align:center}
 .x{background:none;color:var(--bad);padding:4px 8px}
 .note{font-size:.82rem;color:var(--mute);margin:12px 0 0}
+.lbl{display:block;font-size:.85rem;color:var(--mute);margin-bottom:4px}
+.txt{width:100%;font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:12px;background:#fff;color:var(--ink)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#reset{display:none;margin-top:8px}
+#cam{position:fixed;inset:0;z-index:9;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;background:rgba(0,0,0,.85)}
+#cam video{max-width:100%;max-height:70vh;border-radius:8px;background:#000}
 </style>
 </head>
 <body>
@@ -62,10 +68,14 @@ a{color:var(--pri);font-weight:600}
   <div class="grid">
     <section class="card" aria-labelledby="cap">
       <h2 id="cap">New reading</h2>
+      <label class="lbl" for="name">Name / reference</label>
+      <input class="txt" id="name" maxlength="60" autocomplete="off" placeholder="e.g. Juan - Toyota Vios">
       <input id="file" type="file" accept="image/*" capture="environment" hidden>
-      <button class="full" id="shoot">Take photo</button>
+      <input id="upl" type="file" accept="image/*" hidden>
+      <div class="two"><button id="shoot">Take photo</button><button class="alt" id="pick">Upload photo</button></div>
       <div class="crop" id="crop"><img id="preview" alt="Captured photo"><div id="sel"></div></div>
       <button class="alt full" id="aim">Select number area</button>
+      <button class="alt full" id="reset">Reset photo</button>
 
       <div class="odo">
         <label for="odo">Odometer (edit if the reading is wrong)</label>
@@ -96,6 +106,10 @@ a{color:var(--pri);font-weight:600}
     </section>
   </div>
 </main>
+<div id="cam" role="dialog" aria-label="Camera">
+  <video id="vid" autoplay playsinline muted></video>
+  <div class="two" style="width:min(360px,100%)"><button id="snap">Capture</button><button class="alt" id="cancelcam">Cancel</button></div>
+</div>
 
 <script>
 (function(){
@@ -106,6 +120,7 @@ const SHEET_URL="https://script.google.com/macros/s/AKfycbwOqP6bSlQJFF3oxFGcxB1-
 const SECRET="finsiodometerproject";
 const pend={},sending={};
 const rid=r=>"r-"+Date.parse(r.t);
+const esc=t=>String(t==null?"":t).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let cur=null, worker=null, busy=false;
 
 function set(k,cls,txt){$("d-"+k).className="dot "+cls;$("t-"+k).textContent=txt}
@@ -115,8 +130,26 @@ function dist(a,b,c,d){const R=6371000,r=Math.PI/180,x=(c-a)*r,y=(d-b)*r;
 function load(){try{return JSON.parse(localStorage.getItem(KEY)||"[]")}catch(e){return []}}
 function store(a){try{localStorage.setItem(KEY,JSON.stringify(a));return true}catch(e){alert("Storage is full. Export the CSV and clear old entries.");return false}}
 
-$("shoot").onclick=()=>{$("file").value="";$("file").click()};
-$("file").onchange=e=>{const f=e.target.files[0];if(f)process(f)};
+const coarse=matchMedia("(pointer:coarse)").matches;
+let stream=null;
+async function openCam(){
+  try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment",width:{ideal:1920}}})}
+  catch(e){alert("Camera not available ("+e.name+"). Allow camera access in the browser, or use Upload photo.");return}
+  $("vid").srcObject=stream;$("cam").style.display="flex";
+}
+function closeCam(){if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$("cam").style.display="none"}
+$("snap").onclick=()=>{const v=$("vid"),c=document.createElement("canvas");c.width=v.videoWidth;c.height=v.videoHeight;
+  c.getContext("2d").drawImage(v,0,0);
+  c.toBlob(b=>{closeCam();process(new File([b],"camera.jpg",{type:"image/jpeg"}),false)},"image/jpeg",.92)};
+$("cancelcam").onclick=closeCam;
+$("shoot").onclick=()=>{
+  if(!coarse&&navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)return openCam();
+  $("file").value="";$("file").click()};
+$("pick").onclick=()=>{$("upl").value="";$("upl").click()};
+$("upl").onchange=e=>{const f=e.target.files[0];if(f)process(f,true)};
+try{$("name").value=localStorage.getItem("odo-name")||""}catch(e){}
+$("name").oninput=()=>{try{localStorage.setItem("odo-name",$("name").value)}catch(e){}};
+$("file").onchange=e=>{const f=e.target.files[0];if(f)process(f,false)};
 
 function getGPS(){
   return new Promise(res=>{
@@ -177,12 +210,13 @@ async function runOcr(img,box){
   set("ocr","busy","Reading: working on the number...");
   try{
     const r=await ocr(img,box);
+    if(!cur||cur.img!==img)return;
     if(r){$("odo").value=r.v;
       const ok=r.how.indexOf("Odometer")>-1||r.conf>=70;
       set("ocr",ok?"ok":"warn","Reading: "+r.v+" ("+r.how+"). "+(ok?"":"Please verify. ")+"Wrong? Select the number area.")}
     else set("ocr","bad","Reading: no number found. Use Select number area, or type it in");
-  }catch(e){set("ocr","bad","Reading failed to load. Type the number in manually")}
-  busy=false;refresh();
+  }catch(e){if(cur&&cur.img===img)set("ocr","bad","Reading failed to load. Type the number in manually")}
+  if(cur&&cur.img===img){busy=false;refresh()}
 }
 function thumb(img){
   const c=document.createElement("canvas"),s=160/Math.max(img.width,img.height);
@@ -193,13 +227,14 @@ function refresh(){
   const ready=cur&&cur.lat!=null&&$("odo").value.trim()&&!busy;
   $("save").disabled=!ready;
   $("aim").style.display=cur&&cur.img?"block":"none";
+  $("reset").style.display=cur?"block":"none";
   const o=$("open");
   if(cur&&cur.lat!=null){o.href=mapLink(cur.lat,cur.lng);o.style.display=""}else o.style.display="none";
 }
 $("odo").oninput=refresh;
 
-async function process(f){
-  busy=true;cur={time:new Date().toISOString()};$("odo").value="";refresh();
+async function process(f,up){
+  busy=true;const mine=cur={time:new Date().toISOString()};$("odo").value="";refresh();
   const url=URL.createObjectURL(f);$("preview").src=url;$("preview").style.display="block";
   set("ocr","busy","Reading: working on the number...");
   set("gps","busy","Location: getting a GPS fix...");
@@ -208,15 +243,20 @@ async function process(f){
   cur.thumb=thumb(img);cur.img=img;
 
   const [gps,exif]=await Promise.all([getGPS(),getExif(f)]);
+  if(cur!==mine)return;
+  if(up&&exif){cur.lat=exif.lat;cur.lng=exif.lng;cur.acc="";cur.src="Photo EXIF";
+    set("gps","ok","Location: from the uploaded photo's GPS tag (where it was taken)")}
+  else
   if(!gps.err){
-    cur.lat=gps.lat;cur.lng=gps.lng;cur.acc=Math.round(gps.acc);cur.src="Live GPS";
-    set("gps",gps.acc<=50?"ok":"warn","Location: live GPS, accuracy about "+cur.acc+" m"+(gps.acc>50?" (weak signal, try outdoors)":""));
+    cur.lat=gps.lat;cur.lng=gps.lng;cur.acc=Math.round(gps.acc);cur.src=up?"Live GPS (upload)":"Live GPS";
+    set("gps",(gps.acc<=50&&!up)?"ok":"warn","Location: live GPS, accuracy about "+cur.acc+" m"+(gps.acc>50?" (weak signal, try outdoors)":"")+(up?". This photo has no GPS tag, so this is where you are now, not where it was taken":""));
   }else if(exif){
     cur.lat=exif.lat;cur.lng=exif.lng;cur.acc="";cur.src="Photo EXIF";
     set("gps","warn","Location: from photo data (live GPS failed: "+gps.err+")");
   }else set("gps","bad","Location: "+gps.err+", and the photo has no GPS data");
 
-  if(!gps.err&&exif){
+  if(up&&exif)set("chk","ok","Cross-check: not needed, using the photo's own GPS tag");
+  else if(!gps.err&&exif){
     const m=Math.round(dist(gps.lat,gps.lng,exif.lat,exif.lng));
     set("chk",m<=200?"ok":"bad",m<=200?"Cross-check: photo location matches ("+m+" m apart)":"Cross-check: photo location is "+m+" m from live GPS. Check this entry");
   }else if(!exif)set("chk","warn","Cross-check: photo has no GPS tag, live GPS only");
@@ -259,7 +299,7 @@ async function sync(id){
   if(!r||r.sync||sending[id])return;
   sending[id]=1;render();
   try{
-    const res=await fetch(SHEET_URL,{method:"POST",body:JSON.stringify({secret:SECRET,id:id,t:r.t,odo:r.odo,lat:r.lat,lng:r.lng,acc:r.acc,src:r.src,photo:pend[id]||""})});
+    const res=await fetch(SHEET_URL,{method:"POST",body:JSON.stringify({secret:SECRET,id:id,name:r.name||"",t:r.t,odo:r.odo,lat:r.lat,lng:r.lng,acc:r.acc,src:r.src,photo:pend[id]||""})});
     const j=parseReply(await res.text());
     if(j.ok){r.sync=1;r.photoUrl=j.photoUrl||"";store(a);delete pend[id]}
     else alert(j.error||"Unknown error from the Sheet");
@@ -267,7 +307,7 @@ async function sync(id){
   delete sending[id];render();
 }
 $("save").onclick=()=>{
-  const a=load(),rec={t:cur.time,odo:$("odo").value.trim(),lat:cur.lat,lng:cur.lng,acc:cur.acc,src:cur.src,th:cur.thumb};
+  const a=load(),rec={t:cur.time,name:$("name").value.trim().slice(0,60),odo:$("odo").value.trim(),lat:cur.lat,lng:cur.lng,acc:cur.acc,src:cur.src,th:cur.thumb};
   if(SHEET_URL)pend[rid(rec)]=photoData(cur.img);
   a.unshift(rec);
   if(store(a)){render();cur=null;$("preview").style.display="none";$("odo").value="";
@@ -284,18 +324,26 @@ function sheetCell(r){
 function render(){
   const a=load();
   if(!a.length){$("list").innerHTML='<p class="empty">No readings yet. Take your first photo.</p>';return}
-  $("list").innerHTML="<table><thead><tr><th></th><th>Reading</th><th>When</th><th>Accuracy</th><th>Map</th><th>Sheet</th><th></th></tr></thead><tbody>"+
-  a.map((r,i)=>"<tr><td><img alt='' src='"+r.th+"'></td><td class='num'>"+r.odo+"</td><td>"+new Date(r.t).toLocaleString()+
+  $("list").innerHTML="<table><thead><tr><th></th><th>Reading</th><th>Name</th><th>When</th><th>Accuracy</th><th>Map</th><th>Sheet</th><th></th></tr></thead><tbody>"+
+  a.map((r,i)=>"<tr><td><img alt='' src='"+r.th+"'></td><td class='num'>"+esc(r.odo)+"</td><td>"+esc(r.name||"")+"</td><td>"+new Date(r.t).toLocaleString()+
   "</td><td>"+(r.acc!==""&&r.acc!=null?r.acc+" m":r.src)+"</td><td><a target='_blank' rel='noopener' href='"+mapLink(r.lat,r.lng)+"'>View location</a></td><td>"+sheetCell(r)+"</td><td><button class='x' data-i='"+i+"' aria-label='Delete reading'>Delete</button></td></tr>").join("")+"</tbody></table>";
 }
 $("list").onclick=e=>{const i=e.target.dataset&&e.target.dataset.i;if(i!=null&&confirm("Delete this reading?")){const a=load();a.splice(+i,1);store(a);render()}};
 $("list").addEventListener("click",e=>{const s=e.target.dataset&&e.target.dataset.s;if(s)sync(s)});
 $("test").onclick=testSheet;
+$("reset").onclick=()=>{
+  if(aimOn)$("aim").click();
+  closeCam();cur=null;busy=false;
+  $("file").value="";$("upl").value="";$("odo").value="";
+  $("preview").removeAttribute("src");$("preview").style.display="none";sel.style.display="none";
+  set("ocr","","Reading: waiting for a photo");set("gps","","Location: waiting for a photo");set("chk","","Cross-check: waiting for a photo");
+  refresh();
+};
 $("clear").onclick=()=>{if(load().length&&confirm("Delete all saved readings?")){store([]);render()}};
 $("csv").onclick=()=>{
   const a=load();if(!a.length)return;
-  const rows=[["time","odometer","latitude","longitude","accuracy_m","source","maps_link"]].concat(
-    a.map(r=>[r.t,r.odo,r.lat,r.lng,r.acc,r.src,mapLink(r.lat,r.lng)]));
+  const rows=[["time","name","odometer","latitude","longitude","accuracy_m","source","maps_link"]].concat(
+    a.map(r=>[r.t,r.name||"",r.odo,r.lat,r.lng,r.acc,r.src,mapLink(r.lat,r.lng)]));
   const csv=rows.map(r=>r.map(v=>'"'+String(v??"").replace(/"/g,'""')+'"').join(",")).join("\n");
   const l=document.createElement("a");l.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
   l.download="odometer-log.csv";l.click();
